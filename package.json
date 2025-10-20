@@ -1,6 +1,6 @@
 {
   "name": "react-native-webrtc",
-  "version": "124.0.4",
+  "version": "124.0.4-beta.1",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/react-native-webrtc/react-native-webrtc.git"
@@ -38,7 +38,7 @@
   },
   "devDependencies": {
     "@types/debug": "4.1.7",
-    "@types/react": "17.0.40",
+    "@types/react": "18.3.12",
     "@types/react-native": "0.67.3",
     "@typescript-eslint/eslint-plugin": "^5.39.0",
     "@typescript-eslint/parser": "^5.39.0",
