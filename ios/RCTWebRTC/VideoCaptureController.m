@@ -62,6 +62,19 @@
 
     self.selectedFormat = format;
 
+    AVCaptureSession *session = self.capturer.captureSession;
+    if (@available(iOS 16.0, *)) {
+        BOOL enable = self.enableMultitaskingCameraAccess;
+        BOOL shouldChange = session.multitaskingCameraAccessEnabled != enable;
+        BOOL canChange = !enable || (enable && session.isMultitaskingCameraAccessSupported);
+
+        if (shouldChange && canChange) {
+            [session beginConfiguration];
+            [session setMultitaskingCameraAccessEnabled:enable];
+            [session commitConfiguration];
+        }
+    }
+
     RCTLog(@"[VideoCaptureController] Capture will start");
 
     // Starting the capture happens on another thread. Wait for it.
@@ -109,7 +122,7 @@
     self.device = nil;
 
     BOOL hasChanged = NO;
-    
+
     NSString *deviceId = constraints[@"deviceId"];
     int width = [constraints[@"width"] intValue];
     int height = [constraints[@"height"] intValue];
@@ -119,12 +132,12 @@
         hasChanged = YES;
         self.width = width;
     }
-    
+
     if (self.height != height) {
         hasChanged = YES;
         self.height = height;
     }
-    
+
     if (self.frameRate != frameRate) {
         hasChanged = YES;
         self.frameRate = frameRate;
@@ -161,12 +174,11 @@
             self.usingFrontCamera ? AVCaptureDevicePositionFront : AVCaptureDevicePositionBack;
         deviceId = [self findDeviceForPosition:position].uniqueID;
     }
-    
+
     if (self.deviceId != deviceId && ![self.deviceId isEqualToString:deviceId]) {
         hasChanged = YES;
         self.deviceId = deviceId;
     }
-
 
     if (self.running && hasChanged) {
         [self startCapture];
@@ -177,7 +189,7 @@
     AVCaptureDeviceFormat *format = self.selectedFormat;
     CMVideoDimensions dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
     NSMutableDictionary *settings = [[NSMutableDictionary alloc] initWithDictionary:@{
-        @"groupId": @"",
+        @"groupId" : @"",
         @"height" : @(dimensions.height),
         @"width" : @(dimensions.width),
         @"frameRate" : @(30),

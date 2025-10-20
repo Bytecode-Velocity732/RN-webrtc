@@ -2,6 +2,7 @@
 #import <objc/runtime.h>
 
 #import <React/RCTLog.h>
+#import <React/RCTUIManager.h>
 #import <React/RCTView.h>
 
 #import <WebRTC/RTCMediaStream.h>
@@ -14,37 +15,15 @@
 #import <WebRTC/RTCVideoFrame.h>
 #import <WebRTC/RTCVideoTrack.h>
 
+#import "PIPController.h"
 #import "RTCVideoViewManager.h"
 #import "WebRTCModule.h"
-
-/**
- * In the fashion of
- * https://www.w3.org/TR/html5/embedded-content-0.html#dom-video-videowidth
- * and https://www.w3.org/TR/html5/rendering.html#video-object-fit, resembles
- * the CSS style {@code object-fit}.
- */
-typedef NS_ENUM(NSInteger, RTCVideoViewObjectFit) {
-    /**
-     * The contain value defined by https://www.w3.org/TR/css3-images/#object-fit:
-     *
-     * The replaced content is sized to maintain its aspect ratio while fitting
-     * within the element's content box.
-     */
-    RTCVideoViewObjectFitContain = 1,
-    /**
-     * The cover value defined by https://www.w3.org/TR/css3-images/#object-fit:
-     *
-     * The replaced content is sized to maintain its aspect ratio while filling
-     * the element's entire content box.
-     */
-    RTCVideoViewObjectFitCover
-};
 
 /**
  * Implements an equivalent of {@code HTMLVideoElement} i.e. Web's video
  * element.
  */
-@interface RTCVideoView : RCTView
+@interface RTCVideoView : RCTView<RTCVideoViewDelegate>
 
 /**
  * The indicator which determines whether this {@code RTCVideoView} is to mirror
@@ -61,6 +40,10 @@ typedef NS_ENUM(NSInteger, RTCVideoViewObjectFit) {
  */
 @property(nonatomic) RTCVideoViewObjectFit objectFit;
 
+@property(nonatomic) BOOL enablePIP;
+
+@property(nonatomic, strong) API_AVAILABLE(ios(15.0)) PIPController *pipController;
+
 /**
  * The {@link RRTCVideoRenderer} which implements the actual rendering.
  */
@@ -69,6 +52,9 @@ typedef NS_ENUM(NSInteger, RTCVideoViewObjectFit) {
 #else
 @property(nonatomic, readonly) RTCMTLVideoView *videoView;
 #endif
+
+// Add a reference to the view manager
+@property(nonatomic, weak) RTCVideoViewManager *viewManager;
 
 /**
  * The {@link RTCVideoTrack}, if any, which this instance renders.
@@ -80,11 +66,14 @@ typedef NS_ENUM(NSInteger, RTCVideoViewObjectFit) {
  */
 @property(nonatomic, weak) WebRTCModule *module;
 
+@property(nonatomic, copy) RCTDirectEventBlock onDimensionsChange;
+
 @end
 
 @implementation RTCVideoView
 
 @synthesize videoView = _videoView;
+@synthesize pipController = _pipController;
 
 /**
  * Tells this view that its window object changed.
@@ -127,7 +116,9 @@ typedef NS_ENUM(NSInteger, RTCVideoViewObjectFit) {
         RTCMTLVideoView *subview = [[RTCMTLVideoView alloc] initWithFrame:CGRectZero];
         _videoView = subview;
 #endif
+        _objectFit = RTCVideoViewObjectFitCover;
         [self addSubview:self.videoView];
+        self.videoView.delegate = self;
     }
 
     return self;
@@ -135,14 +126,14 @@ typedef NS_ENUM(NSInteger, RTCVideoViewObjectFit) {
 
 #if TARGET_OS_OSX
 - (void)layout {
-  [super layout];
+    [super layout];
 #else
 - (void)layoutSubviews {
-  [super layoutSubviews];
+    [super layoutSubviews];
 #endif
 
-  CGRect bounds = self.bounds;
-  self.videoView.frame = bounds;
+    CGRect bounds = self.bounds;
+    self.videoView.frame = bounds;
 }
 
 /**
@@ -158,6 +149,66 @@ typedef NS_ENUM(NSInteger, RTCVideoViewObjectFit) {
 
         self.videoView.transform = mirror ? CGAffineTransformMakeScale(-1.0, 1.0) : CGAffineTransformIdentity;
     }
+}
+
+- (void)insertReactSubview:(UIView *)subview atIndex:(NSInteger)atIndex {
+    // All subviews are treated as fallback views
+    [_pipController insertFallbackView:subview];
+}
+
+- (void)API_AVAILABLE(ios(15.0))setPIPOptions:(NSDictionary *)pipOptions {
+    if (!pipOptions) {
+        _pipController = nil;
+        return;
+    }
+
+    BOOL enabled = YES;
+    BOOL startAutomatically = YES;
+    BOOL stopAutomatically = YES;
+
+    CGSize preferredSize = CGSizeZero;
+
+    if ([pipOptions objectForKey:@"enabled"]) {
+        enabled = [pipOptions[@"enabled"] boolValue];
+    }
+    if ([pipOptions objectForKey:@"startAutomatically"]) {
+        startAutomatically = [pipOptions[@"startAutomatically"] boolValue];
+    }
+    if ([pipOptions objectForKey:@"stopAutomatically"]) {
+        stopAutomatically = [pipOptions[@"stopAutomatically"] boolValue];
+    }
+    if ([pipOptions objectForKey:@"preferredSize"]) {
+        NSDictionary *sizeDict = pipOptions[@"preferredSize"];
+        id width = sizeDict[@"width"];
+        id height = sizeDict[@"height"];
+
+        if ([width isKindOfClass:[NSNumber class]] && [height isKindOfClass:[NSNumber class]]) {
+            preferredSize = CGSizeMake([width doubleValue], [height doubleValue]);
+        }
+    }
+
+    if (!enabled) {
+        _pipController = nil;
+        return;
+    }
+
+    if (!_pipController) {
+        _pipController = [[PIPController alloc] initWithSourceView:self];
+        _pipController.videoTrack = _videoTrack;
+    }
+
+    _pipController.startAutomatically = startAutomatically;
+    _pipController.stopAutomatically = stopAutomatically;
+    _pipController.objectFit = _objectFit;
+    _pipController.preferredSize = preferredSize;
+}
+
+- (void)API_AVAILABLE(ios(15.0))startPIP {
+    [_pipController startPIP];
+}
+
+- (void)API_AVAILABLE(ios(15.0))stopPIP {
+    [_pipController stopPIP];
 }
 
 /**
@@ -178,6 +229,9 @@ typedef NS_ENUM(NSInteger, RTCVideoViewObjectFit) {
             self.videoView.videoContentMode = UIViewContentModeScaleAspectFit;
         }
 #endif
+        if (@available(iOS 15.0, *)) {
+            _pipController.objectFit = fit;
+        }
     }
 }
 
@@ -198,6 +252,7 @@ typedef NS_ENUM(NSInteger, RTCVideoViewObjectFit) {
             });
         }
 
+        [_pipController setVideoTrack:videoTrack];
         _videoTrack = videoTrack;
 
         // Clear the videoView by rendering a 2x2 blank frame.
@@ -243,6 +298,18 @@ typedef NS_ENUM(NSInteger, RTCVideoViewObjectFit) {
     }
 }
 
+- (void)videoView:(id)videoView didChangeVideoSize:(CGSize)size {
+    // Capture the callback block to avoid accessing it across threads
+    RCTDirectEventBlock callback = self.onDimensionsChange;
+    if (callback) {
+        NSDictionary *eventData = @{@"width" : @(size.width), @"height" : @(size.height)};
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            callback(eventData);
+        });
+    }
+}
+
 @end
 
 @implementation RTCVideoViewManager
@@ -252,6 +319,7 @@ RCT_EXPORT_MODULE()
 - (RCTView *)view {
     RTCVideoView *v = [[RTCVideoView alloc] init];
     v.module = [self.bridge moduleForName:@"WebRTCModule"];
+    v.viewManager = self;
     v.clipsToBounds = YES;
     return v;
 }
@@ -278,6 +346,8 @@ RCT_CUSTOM_VIEW_PROPERTY(objectFit, NSString *, RTCVideoView) {
     view.objectFit = fit;
 }
 
+RCT_EXPORT_VIEW_PROPERTY(onDimensionsChange, RCTDirectEventBlock)
+
 RCT_CUSTOM_VIEW_PROPERTY(streamURL, NSString *, RTCVideoView) {
     if (!json) {
         view.videoTrack = nil;
@@ -301,6 +371,39 @@ RCT_CUSTOM_VIEW_PROPERTY(streamURL, NSString *, RTCVideoView) {
     });
 }
 
+RCT_CUSTOM_VIEW_PROPERTY(iosPIP, NSDictionary *, RTCVideoView) {
+    if (@available(iOS 15.0, *)) {
+        [view setPIPOptions:json];
+    }
+}
+
+RCT_EXPORT_METHOD(startIOSPIP : (nonnull NSNumber *)reactTag) {
+    if (@available(iOS 15.0, *)) {
+        RCTUIManager *uiManager = [self.bridge moduleForClass:[RCTUIManager class]];
+        [uiManager addUIBlock:^(RCTUIManager *uiManager, NSDictionary<NSNumber *, UIView *> *viewRegistry) {
+            UIView *view = viewRegistry[reactTag];
+            if (!view || ![view isKindOfClass:[RTCVideoView class]]) {
+                RCTLogError(@"Cannot find RTCVideoView with tag #%@", reactTag);
+                return;
+            }
+            [(RTCVideoView *)view startPIP];
+        }];
+    }
+}
+
+RCT_EXPORT_METHOD(stopIOSPIP : (nonnull NSNumber *)reactTag) {
+    if (@available(iOS 15.0, *)) {
+        RCTUIManager *uiManager = [self.bridge moduleForClass:[RCTUIManager class]];
+        [uiManager addUIBlock:^(RCTUIManager *uiManager, NSDictionary<NSNumber *, UIView *> *viewRegistry) {
+            UIView *view = viewRegistry[reactTag];
+            if (!view || ![view isKindOfClass:[RTCVideoView class]]) {
+                RCTLogError(@"Cannot find RTCVideoView with tag #%@", reactTag);
+                return;
+            }
+            [(RTCVideoView *)view stopPIP];
+        }];
+    }
+}
 + (BOOL)requiresMainQueueSetup {
     return NO;
 }
